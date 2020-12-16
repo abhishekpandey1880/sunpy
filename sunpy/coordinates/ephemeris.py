@@ -90,7 +90,7 @@ def get_body_heliographic_stonyhurst(body, time='now', observer=None, *, include
     <HeliographicStonyhurst Coordinate (obstime=2001-02-03T00:00:00.000): (lon, lat, radius) in (deg, deg, AU)
         (63.03105777, -5.20656151, 1.6251161)
      (d_lon, d_lat, d_radius) in (arcsec / s, arcsec / s, km / s)
-        (0.007552, 0.00037353, -28.43105538)>
+        (-0.02323686, 0.00073376, -1.4798387)>
 
     Transform that same location and velocity of Mars to a different frame using
     `~astropy.coordinates.SkyCoord`.
@@ -102,7 +102,7 @@ def get_body_heliographic_stonyhurst(body, time='now', observer=None, *, include
         (7.835757e-15, -0.00766698, 1.01475668)>): (Tx, Ty, distance) in (arcsec, arcsec, AU)
         (-298029.94625805, -21753.50941181, 1.40010091)
      (d_Tx, d_Ty, d_distance) in (arcsec / s, arcsec / s, km / s)
-        (-0.02787759, -0.00312481, -58.67123579)>
+        (-0.01652981, -0.00059216, -15.14320414)>
     """
     obstime = parse_time(time)
 
@@ -164,9 +164,9 @@ def get_earth(time='now', *, include_velocity=False):
 
     Notes
     -----
-    The Earth's velocity in the output coordinate will invariably be negligible because the
-    `~sunpy.coordinates.frames.HeliographicStonyhurst` frame rotates in time such that the XZ-plane
-    tracks Earth.
+    The Earth's velocity in the output coordinate will invariably be negligible in the longitude
+    direction because the `~sunpy.coordinates.frames.HeliographicStonyhurst` frame rotates in time
+    such that the plane of zero longitude (the XZ-plane) tracks Earth.
 
     Examples
     --------
@@ -178,12 +178,12 @@ def get_earth(time='now', *, include_velocity=False):
     <SkyCoord (HeliographicStonyhurst: obstime=2001-02-03T04:05:06.000): (lon, lat, radius) in (deg, deg, AU)
         (0., -6.18656962, 0.98567647)
      (d_lon, d_lat, d_radius) in (arcsec / s, arcsec / s, km / s)
-        (0., 0., 0.)>
+        (6.42643739e-11, -0.00279484, 0.24968506)>
     >>> get_earth('2001-02-03 04:05:06', include_velocity=True).transform_to('heliocentricinertial')
     <SkyCoord (HeliocentricInertial: obstime=2001-02-03T04:05:06.000): (lon, lat, distance) in (deg, deg, AU)
         (58.41594489, -6.18656962, 0.98567647)
      (d_lon, d_lat, d_distance) in (arcsec / s, arcsec / s, km / s)
-        (0.0424104, 0., 0.)>
+        (0.0424104, -0.00279484, 0.2496851)>
     """
     earth = get_body_heliographic_stonyhurst('earth', time=time, include_velocity=include_velocity)
 
@@ -269,11 +269,11 @@ def get_horizons_coord(body, time='now', id_type='majorbody', *, include_velocit
     Query the location and velocity of the asteroid Juno
 
     >>> get_horizons_coord('Juno', '1995-07-18 07:17', 'smallbody', include_velocity=True)  # doctest: +REMOTE_DATA
-    INFO: Obtained JPL HORIZONS location for 3 Juno [sunpy.coordinates.ephemeris]
+    INFO: Obtained JPL HORIZONS location for 3 Juno (A804 RA) [sunpy.coordinates.ephemeris]
     <SkyCoord (HeliographicStonyhurst: obstime=1995-07-18T07:17:00.000): (lon, lat, radius) in (deg, deg, AU)
-        (-25.16107572, 14.59098456, 3.17667662)
+        (-25.16107532, 14.59098438, 3.17667664)
      (d_lon, d_lat, d_radius) in (arcsec / s, arcsec / s, km / s)
-        (-0.00514936, -0.00205857, 8.89781348)>
+        (-0.03306548, 0.00052415, -2.66709222)>
     """
     obstime = parse_time(time)
     array_time = np.reshape(obstime, (-1,))  # Convert to an array, even if scalar

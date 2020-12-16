@@ -11,14 +11,13 @@ For more details checkout the :ref:`reference`.
 .. toctree::
    :maxdepth: 3
 
-   installation/index
+   installation
    Brief Tour <tour>
    Data Acquisition <acquiring_data/index>
    Data Types <data_types/index>
    Plotting <plotting>
    Units and Coordinates <units-coordinates>
    Time <time>
-   roi
    customization
    logger
    ssw

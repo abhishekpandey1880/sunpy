@@ -2,7 +2,7 @@ import pytest
 from hypothesis import given, settings
 
 import astropy.units as u
-from astropy.coordinates import BaseCoordinateFrame, SkyCoord, frame_transform_graph
+from astropy.coordinates import HeliocentricMeanEcliptic, SkyCoord, frame_transform_graph
 from astropy.tests.helper import assert_quantity_allclose
 from astropy.time import Time
 
@@ -64,15 +64,21 @@ def rot_hpc():
                             duration=4*u.day))
 
 
+# Test a non-SunPy frame
+@pytest.fixture
+def rot_hme():
+    return (HeliocentricMeanEcliptic,
+            RotatedSunFrame(lon=1*u.deg, lat=2*u.deg, distance=3*u.AU,
+                            base=HeliocentricMeanEcliptic(obstime='2001-01-01', equinox='2001-01-01'),
+                            duration=4*u.day))
+
+
 @pytest.mark.parametrize("indirect_fixture",
-                         ["rot_hgs", "rot_hgc", "rot_hci", "rot_hcc", "rot_hpc"], indirect=True)
+                         ["rot_hgs", "rot_hgc", "rot_hci", "rot_hcc", "rot_hpc", "rot_hme"], indirect=True)
 def test_class_creation(indirect_fixture):
     base_class, rot_frame = indirect_fixture
 
     rot_class = type(rot_frame)
-
-    # Check that that the RotatedSunFrame metaclass is derived from the frame's metaclass
-    assert issubclass(type(rot_class), type(base_class))
 
     # Check that the RotatedSunFrame class name has both 'RotatedSun' and the name of the base
     assert 'RotatedSun' in rot_class.__name__
@@ -80,6 +86,9 @@ def test_class_creation(indirect_fixture):
 
     # Check that the base class is in fact the specified class
     assert type(rot_frame.base) == base_class
+
+    # Check that the new class does *not* have the `obstime` frame attribute
+    assert 'obstime' not in rot_frame.frame_attributes
 
     # Check that one-leg transformations have been created
     assert len(frame_transform_graph.get_transform(rot_class, rot_class).transforms) == 1
@@ -92,6 +101,10 @@ def test_class_creation(indirect_fixture):
     # Check that the component data has been migrated
     assert rot_frame.has_data
     assert not rot_frame.base.has_data
+
+
+def test_no_obstime_frame_attribute():
+    assert 'obstime' not in RotatedSunFrame.frame_attributes
 
 
 def test_as_base(rot_hgs):
@@ -108,11 +121,6 @@ def test_as_base(rot_hgs):
 def test_no_base():
     with pytest.raises(TypeError):
         RotatedSunFrame()
-
-
-def test_no_sunpy_frame():
-    with pytest.raises(TypeError):
-        RotatedSunFrame(base=BaseCoordinateFrame)
 
 
 def test_no_obstime():

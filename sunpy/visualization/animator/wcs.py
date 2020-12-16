@@ -48,7 +48,10 @@ class ArrayAnimatorWCS(ArrayAnimator):
         * ``major_formatter``: `~astropy.visualization.wcsaxes.CoordinateHelper.set_major_formatter`
         * ``axislabel``: `~astropy.visualization.wcsaxes.CoordinateHelper.set_axislabel`
         * ``grid``: `~astropy.visualization.wcsaxes.CoordinateHelper.grid` (The value should be a dict of keyword arguments to ``grid()`` or `True`).
-        * ``ticks``: `dict` the keyword arguments to the `~astropy.visualization.wcsaxes.CoordinateHelper.set_ticks` method.
+        * ``ticks``: `dict` or `bool` the keyword arguments to the
+          `~astropy.visualization.wcsaxes.CoordinateHelper.set_ticks` method,
+          or `False` to display no ticks for this coord.
+
     ylim: `tuple` or `str`, optional
        The yaxis limits to use when drawing a line plot, if 'fixed' then use
        the global data limits, if 'dynamic' then set the y limit for each frame
@@ -77,13 +80,6 @@ class ArrayAnimatorWCS(ArrayAnimator):
             image_axes.append(slices[::-1].index("y"))
             self.plot_dimensionality = 2
 
-        if self.plot_dimensionality == 1:
-            try:
-                from astropy.visualization.wcsaxes.frame import RectangularFrame1D  # NOQA
-            except ImportError as e:
-                raise ImportError(
-                    "Astropy 4.0 must be installed to do line plotting with WCSAxes.") from e
-
         self.naxis = data.ndim
         self.num_sliders = self.naxis - self.plot_dimensionality
         self.slices_wcsaxes = list(slices)
@@ -106,10 +102,8 @@ class ArrayAnimatorWCS(ArrayAnimator):
         """
         Read first the axes names property of the wcs and fall back to physical types.
         """
-        # world_axis_names was only added to the APE 14 API in 4.0, so do this for backwards compatibility.
-        world_axis_names = getattr(self.wcs, "world_axis_names", [''] * self.wcs.world_n_dim)
         # Return the name if it is set, or the physical type if it is not.
-        return [l or t for l, t in zip(world_axis_names, self.wcs.world_axis_physical_types)]
+        return [l or t for l, t in zip(self.wcs.world_axis_names, self.wcs.world_axis_physical_types)]
 
     def _compute_slider_labels_from_wcs(self, slices):
         """
@@ -187,10 +181,15 @@ class ArrayAnimatorWCS(ArrayAnimator):
 
             ticks = params.get("ticks", None)
             if ticks is not None:
-                if not isinstance(ticks, dict):
+                if isinstance(ticks, bool):
+                    coord.set_ticks_visible(ticks)
+                    coord.set_ticklabel_visible(ticks)
+                elif isinstance(ticks, dict):
+                    coord.set_ticks(**ticks)
+                else:
                     raise TypeError(
-                        "The 'ticks' value in the coord_params dictionary must be a dict.")
-                coord.set_ticks(**ticks)
+                        "The 'ticks' value in the coord_params dictionary must be a dict or a boolean."
+                    )
 
     def _get_main_axes(self):
         axes = self.fig.add_axes([0.1, 0.1, 0.8, 0.8], projection=self.wcs,

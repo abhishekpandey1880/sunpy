@@ -1,6 +1,7 @@
 import os
 import glob
 import datetime
+from pathlib import Path
 from collections import OrderedDict
 
 import numpy as np
@@ -38,6 +39,8 @@ noaa_ind_txt_filepath = os.path.join(filepath, 'RecentIndices_truncated.txt')
 noaa_pre_txt_filepath = os.path.join(filepath, 'predicted-sunspot-radio-flux_truncated.txt')
 goes_filepath_com = os.path.join(filepath, 'go1520120601.fits.gz')
 goes_filepath = os.path.join(filepath, 'go1520110607.fits')
+new_goes15_filepath = os.path.join(filepath, 'goes_truncated_test_goes15.nc')
+new_goes16_filepath = os.path.join(filepath, 'goes_truncated_test_goes16.nc')
 a_list_of_many = glob.glob(os.path.join(filepath, "eve", "*"))
 
 # =============================================================================
@@ -90,6 +93,12 @@ class TestTimeSeries:
             filepath, "eve", "*"), source='EVE', concatenate=True)
         assert isinstance(ts_from_glob, sunpy.timeseries.sources.eve.EVESpWxTimeSeries)
 
+    @pytest.mark.filterwarnings('ignore:Unknown units')
+    def test_factory_generate_from_pathlib(self):
+        # Test making a TimeSeries from a : pathlib.PosixPath
+        ts_from_pathlib = sunpy.timeseries.TimeSeries(Path(filepath).joinpath("gbm.fits"),
+                                                      source="GBMSummary")
+        assert isinstance(ts_from_pathlib, sunpy.timeseries.sources.fermi_gbm.GBMSummaryTimeSeries)
 # =============================================================================
 # Individual Implicit Source Tests
 # =============================================================================
@@ -112,6 +121,16 @@ class TestTimeSeries:
     def test_implicit_goes_com(self):
         # Test a GOES TimeSeries
         ts_goes = sunpy.timeseries.TimeSeries(goes_filepath_com)
+        assert isinstance(ts_goes, sunpy.timeseries.sources.goes.XRSTimeSeries)
+
+    def test_implicit_new_goes15(self):
+        # Test a GOES TimeSeries
+        ts_goes = sunpy.timeseries.TimeSeries(new_goes15_filepath)
+        assert isinstance(ts_goes, sunpy.timeseries.sources.goes.XRSTimeSeries)
+
+    def test_implicit_new_goes16(self):
+        # Test a GOES TimeSeries
+        ts_goes = sunpy.timeseries.TimeSeries(new_goes16_filepath)
         assert isinstance(ts_goes, sunpy.timeseries.sources.goes.XRSTimeSeries)
 
     def test_implicit_lyra(self):
@@ -162,6 +181,16 @@ class TestTimeSeries:
     def test_goes_com(self):
         # Test a GOES TimeSeries
         ts_goes = sunpy.timeseries.TimeSeries(goes_filepath_com, source='XRS')
+        assert isinstance(ts_goes, sunpy.timeseries.sources.goes.XRSTimeSeries)
+
+    def test_new_goes15(self):
+        # Test a GOES TimeSeries
+        ts_goes = sunpy.timeseries.TimeSeries(new_goes15_filepath, source='XRS')
+        assert isinstance(ts_goes, sunpy.timeseries.sources.goes.XRSTimeSeries)
+
+    def test_new_goes16(self):
+        # Test a GOES TimeSeries
+        ts_goes = sunpy.timeseries.TimeSeries(new_goes16_filepath, source='XRS')
         assert isinstance(ts_goes, sunpy.timeseries.sources.goes.XRSTimeSeries)
 
     def test_lyra(self):

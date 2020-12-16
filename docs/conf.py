@@ -10,6 +10,7 @@ import os
 import sys
 import datetime
 from pkg_resources import get_distribution, DistributionNotFound
+from packaging.version import Version
 
 # -- Check for dependencies ----------------------------------------------------
 
@@ -54,7 +55,8 @@ copyright = '{}, {}'.format(datetime.datetime.now().year, author)
 
 # The full version, including alpha/beta/rc tags
 release = __version__
-is_development = '.dev' in __version__
+sunpy_version = Version(__version__)
+is_release = not(sunpy_version.is_prerelease or sunpy_version.is_devrelease)
 
 # -- SunPy Sample Data and Config ----------------------------------------------
 
@@ -104,9 +106,9 @@ extensions = [
     'sphinx.ext.napoleon',
     'sphinx.ext.todo',
     'sphinx.ext.viewcode',
-    'sunpy.util.sphinx.changelog',
     'sunpy.util.sphinx.doctest',
     'sunpy.util.sphinx.generate',
+    'sunpy.util.sphinx.changelog',
 ]
 
 # Add any paths that contain templates here, relative to this directory.
@@ -115,7 +117,16 @@ extensions = [
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
 # This pattern also affects html_static_path and html_extra_path.
+
+# Add any extra paths that contain custom files (such as robots.txt or
+# .htaccess) here, relative to this directory. These files are copied
+# directly to the root of the documentation.
+html_extra_path = ['robots.txt']
+
 exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
+
+if is_release:
+    exclude_patterns.append('dev_guide/contents/*')
 
 # The suffix(es) of source filenames.
 # You can specify multiple suffix as a list of string:
@@ -159,7 +170,7 @@ intersphinx_mapping = {
     "pandas": ("https://pandas.pydata.org/pandas-docs/stable/", None),
     "skimage": ("https://scikit-image.org/docs/stable/", None),
     "drms": ("https://docs.sunpy.org/projects/drms/en/stable/", None),
-    "parfive": ("https://parfive.readthedocs.io/en/latest/", None),
+    "parfive": ("https://parfive.readthedocs.io/en/stable/", None),
     "reproject": ("https://reproject.readthedocs.io/en/stable/", None),
     "aiapy": ("https://aiapy.readthedocs.io/en/stable/", None),
 }
@@ -218,11 +229,12 @@ sphinx_gallery_conf = {
 
 # -- Stability Page ------------------------------------------------------------
 
-with open('./dev_guide/sunpy_stability.yaml', 'r') as estability:
+with open('./code_ref/sunpy_stability.yaml', 'r') as estability:
     sunpy_modules = yaml.load(estability.read(), Loader=yaml.Loader)
 
 html_context = {
-    'sunpy_modules': sunpy_modules
+    'sunpy_modules': sunpy_modules,
+    'is_development': not is_release,
 }
 
 
@@ -233,18 +245,22 @@ def rstjinja(app, docname, source):
     # Make sure we're outputting HTML
     if app.builder.format != 'html':
         return
-    src = source[0]
-    if "Current status" in src[:20]:
+    files_to_render = ["code_ref/stability", "dev_guide/index"]
+    if docname in files_to_render:
+        print(f"Jinja rendering {docname}")
         rendered = app.builder.templates.render_string(
-            src, app.config.html_context
+            source[0], app.config.html_context
         )
         source[0] = rendered
 
+# JSOC email os env
+os.environ["JSOC_EMAIL"] = "jsoc@cadair.com"
 
 # -- Sphinx setup --------------------------------------------------------------
+
 def setup(app):
     # Generate the stability page
     app.connect("source-read", rstjinja)
-
-    # The theme conf provides a fix for circle ci redirections
-    fix_circleci(app)
+    if is_release:
+        from sunpy.util.sphinx.changelog import DummyChangelog
+        app.add_directive('changelog', DummyChangelog, override=True)

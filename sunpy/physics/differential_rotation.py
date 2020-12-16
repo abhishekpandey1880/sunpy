@@ -105,6 +105,22 @@ def diff_rot(duration: u.s, latitude: u.deg, rot_type='howard', frame_time='side
     return Longitude(rotation.to(u.deg))
 
 
+def _validate_observer_args(initial_obstime, observer, time):
+    if (observer is not None) and (time is not None):
+        raise ValueError(
+            "Either the 'observer' or the 'time' keyword must be specified, "
+            "but not both simultaneously.")
+    elif observer is not None:
+        # Check that the new_observer is specified correctly.
+        if not (isinstance(observer, (BaseCoordinateFrame, SkyCoord))):
+            raise ValueError(
+                "The 'observer' must be an astropy.coordinates.BaseCoordinateFrame or an astropy.coordinates.SkyCoord.")
+        if observer.obstime is None:
+            raise ValueError("The observer 'obstime' property must not be None.")
+    elif observer is None and time is None:
+        raise ValueError("Either the 'observer' or the 'time' keyword must not be None.")
+
+
 def _get_new_observer(initial_obstime, observer, time):
     """
     Helper function that interprets the possible ways of specifying the
@@ -144,17 +160,9 @@ def _get_new_observer(initial_obstime, observer, time):
         is not None the output has the same type as the "observer" keyword.  In all cases
         the output is specified in the heliographic Stonyhurst coordinate system.
     """
+    _validate_observer_args(initial_obstime, observer, time)
     # Check the input and create the new observer
-    if (observer is not None) and (time is not None):
-        raise ValueError(
-            "Either the 'observer' or the 'time' keyword must be specified, but not both simultaneously.")
-    elif observer is not None:
-        # Check that the new_observer is specified correctly.
-        if not (isinstance(observer, (BaseCoordinateFrame, SkyCoord))):
-            raise ValueError(
-                "The 'observer' must be an astropy.coordinates.BaseCoordinateFrame or an astropy.coordinates.SkyCoord.")
-        if observer.obstime is None:
-            raise ValueError("The observer 'obstime' property must not be None.")
+    if observer is not None:
         new_observer = observer
     elif time is not None:
         warnings.warn("Using 'time' assumes an Earth-based observer.")
@@ -162,11 +170,7 @@ def _get_new_observer(initial_obstime, observer, time):
             new_observer_time = initial_obstime + time
         else:
             new_observer_time = parse_time(time)
-
         new_observer = get_body("earth", new_observer_time)
-    else:
-        raise ValueError("Either the 'observer' or the 'time' keyword must not be None.")
-
     return new_observer
 
 
@@ -229,7 +233,7 @@ def solar_rotate_coordinate(coordinate, observer=None, time=None, **diff_rot_kwa
     >>> end_time = parse_time('2010-09-11 13:34:56')
     >>> c = SkyCoord(-570*u.arcsec, 120*u.arcsec, obstime=start_time,
     ...              observer="earth", frame=Helioprojective)
-    >>> solar_rotate_coordinate(c, time=end_time)  # doctest: +IGNORE_WARNINGS
+    >>> solar_rotate_coordinate(c, time=end_time)  # doctest: +SKIP
     <SkyCoord (Helioprojective: obstime=2010-09-11T13:34:56.000, rsun=695700.0 km, observer=<HeliographicStonyhurst Coordinate (obstime=2010-09-11T13:34:56.000): (lon, lat, radius) in (deg, deg, AU)
         (9.40248797e-16, 7.24318962, 1.00669016)>): (Tx, Ty, distance) in (arcsec, arcsec, AU)
         (-363.04027419, 104.87807178, 1.00241935)>
@@ -591,7 +595,7 @@ def differential_rotate(smap, observer=None, time=None, **diff_rot_kwargs):
     out_meta = deepcopy(smap.meta)
     if out_meta.get('date_obs', False):
         del out_meta['date_obs']
-    out_meta['date-obs'] = new_observer.obstime.strftime("%Y-%m-%dT%H:%M:%S.%f")
+    out_meta['date-obs'] = new_observer.obstime.isot
 
     # Need to update the observer location for the output map.
     # Remove all the possible observer keys

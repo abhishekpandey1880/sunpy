@@ -83,6 +83,8 @@ def generic_map():
         'CDELT2': 10,
         'CUNIT1': 'arcsec',
         'CUNIT2': 'arcsec',
+        'CTYPE1': 'HPLN-TAN',
+        'CTYPE2': 'HPLT-TAN',
         'PC1_1': 0,
         'PC1_2': -1,
         'PC2_1': 1,
@@ -245,7 +247,18 @@ def test_rsun_obs(generic_map):
 
 
 def test_coordinate_system(generic_map):
-    assert generic_map.coordinate_system == ('HPLN-   ', 'HPLT-   ')
+    assert generic_map.coordinate_system == ('HPLN-TAN', 'HPLT-TAN')
+
+
+def test_default_coordinate_system(generic_map):
+    generic_map.meta.pop('ctype1')
+    with pytest.warns(SunpyUserWarning, match='Missing CTYPE1 from metadata'):
+        assert generic_map.coordinate_system == ('HPLN-TAN', 'HPLT-TAN')
+
+    generic_map.meta.pop('ctype2')
+    generic_map.meta['ctype1'] = 'HPLN-TAN'
+    with pytest.warns(SunpyUserWarning, match='Missing CTYPE2 from metadata'):
+        assert generic_map.coordinate_system == ('HPLN-TAN', 'HPLT-TAN')
 
 
 def test_carrington_longitude(generic_map):
@@ -334,7 +347,9 @@ def test_rotation_matrix_cd_cdelt():
         'NAXIS1': 6,
         'NAXIS2': 6,
         'CUNIT1': 'arcsec',
-        'CUNIT2': 'arcsec'
+        'CUNIT2': 'arcsec',
+        'CTYPE1': 'HPLN-TAN',
+        'CTYPE2': 'HPLT-TAN',
     }
     cd_map = sunpy.map.Map((data, header))
     np.testing.assert_allclose(cd_map.rotation_matrix, np.array([[0., -1.], [1., 0]]))
@@ -356,7 +371,9 @@ def test_rotation_matrix_cd_cdelt_square():
         'NAXIS1': 6,
         'NAXIS2': 6,
         'CUNIT1': 'arcsec',
-        'CUNIT2': 'arcsec'
+        'CUNIT2': 'arcsec',
+        'CTYPE1': 'HPLN-TAN',
+        'CTYPE2': 'HPLT-TAN',
     }
     cd_map = sunpy.map.Map((data, header))
     np.testing.assert_allclose(cd_map.rotation_matrix, np.array([[0., -1], [1., 0]]))
@@ -374,9 +391,20 @@ def test_world_to_pixel(generic_map):
 
 
 def test_world_to_pixel_error(generic_map):
-    strerr = 'world_to_pixel takes a Astropy coordinate frame or SkyCoord instance'
+    strerr = 'Expected the following order of world arguments: SkyCoord'
     with pytest.raises(ValueError, match=strerr):
         generic_map.world_to_pixel(1)
+
+
+@pytest.mark.parametrize('origin', [0, 1])
+def test_world_pixel_roundtrip(simple_map, origin):
+    pix = 1 * u.pix, 1 * u.pix
+    with pytest.warns(SunpyDeprecationWarning, match='The origin argument is deprecated'):
+        coord = simple_map.pixel_to_world(*pix, origin=origin)
+        pix_roundtrip = simple_map.world_to_pixel(coord, origin=origin)
+
+    assert u.allclose(pix_roundtrip.x, pix[0], atol=1e-10 * u.pix)
+    assert u.allclose(pix_roundtrip.y, pix[1], atol=1e-10 * u.pix)
 
 
 def test_save(aia171_test_map, generic_map):
@@ -422,6 +450,8 @@ def test_default_shift():
         'NAXIS2': 6,
         'CUNIT1': 'arcsec',
         'CUNIT2': 'arcsec',
+        'CTYPE1': 'HPLN-TAN',
+        'CTYPE2': 'HPLT-TAN',
     }
     cd_map = sunpy.map.Map((data, header))
     assert cd_map.shifted_value[0].value == 0
@@ -577,14 +607,14 @@ def test_resample(simple_map, shape):
     # Check that the corner coordinates of the input and output are the same
     resampled_lower_left = resampled.pixel_to_world(-0.5 * u.pix, -0.5 * u.pix)
     original_lower_left = simple_map.pixel_to_world(-0.5 * u.pix, -0.5 * u.pix)
-    assert resampled_lower_left.Tx == original_lower_left.Tx
-    assert resampled_lower_left.Ty == original_lower_left.Ty
+    assert u.allclose(resampled_lower_left.Tx, original_lower_left.Tx)
+    assert u.allclose(resampled_lower_left.Ty, original_lower_left.Ty)
 
     resampled_upper_left = resampled.pixel_to_world((shape[0] - 0.5) * u.pix,
                                                     (shape[1] - 0.5) * u.pix)
     original_upper_left = simple_map.pixel_to_world(2.5 * u.pix, 2.5 * u.pix)
-    assert resampled_upper_left.Tx == original_upper_left.Tx
-    assert resampled_upper_left.Ty == original_upper_left.Ty
+    assert u.allclose(resampled_upper_left.Tx, original_upper_left.Tx)
+    assert u.allclose(resampled_upper_left.Ty, original_upper_left.Ty)
 
 
 resample_test_data = [('linear', (100, 200) * u.pixel), ('neighbor', (128, 256) * u.pixel),
@@ -772,18 +802,7 @@ def test_rotate_invalid_order(generic_map):
 def test_as_mpl_axes_aia171(aia171_test_map):
     ax = plt.subplot(projection=aia171_test_map)
     assert isinstance(ax, wcsaxes.WCSAxes)
-    # This test doesn't work, it seems that WCSAxes copies or changes the WCS
-    # object.
-    #  assert ax.wcs is aia171_test_map.wcs
     assert all([ct1 == ct2 for ct1, ct2 in zip(ax.wcs.wcs.ctype, aia171_test_map.wcs.wcs.ctype)])
-    # Map adds these attributes, so we use them to check.
-    assert hasattr(ax.wcs, 'heliographic_observer')
-
-
-def test_pixel_to_world_no_projection(generic_map):
-    out = generic_map.pixel_to_world(*u.Quantity(generic_map.reference_pixel))
-    assert_quantity_allclose(out.Tx, 0*u.arcsec)
-    assert_quantity_allclose(out.Ty, 0*u.arcsec)
 
 
 def test_validate_meta(generic_map):
@@ -898,6 +917,8 @@ def test_missing_metadata_warnings():
         header = {}
         header['cunit1'] = 'arcsec'
         header['cunit2'] = 'arcsec'
+        header['ctype1'] = 'HPLN-TAN'
+        header['ctype2'] = 'HPLT-TAN'
         array_map = sunpy.map.Map(np.random.rand(20, 15), header)
         array_map.peek()
     # There should be 2 warnings for missing metadata (obstime and observer location)
@@ -990,46 +1011,6 @@ width_deg = 20 * u.arcsec
 height_deg = 20 * u.arcsec
 
 
-def test_deprecated_submap_inputs(generic_map2, coords):
-    bl_coord, tr_coord, bl_tr_coord = coords
-    # deprecated
-    with pytest.warns(SunpyDeprecationWarning):
-        smap = generic_map2.submap(bl_coord, tr_coord)
-    assert u.allclose(smap.dimensions, (3, 3) * u.pix)
-
-    with pytest.warns(SunpyDeprecationWarning):
-        smap = generic_map2.submap(bl_pix, tr_pix)
-    assert u.allclose(smap.dimensions, (3, 3) * u.pix)
-
-    # error
-    with pytest.raises(TypeError, match="width must be specified as a keyword argument"):
-        generic_map2.submap(bl_coord, width_deg, height_deg)
-
-    with pytest.raises(TypeError, match="width must be specified as a keyword argument"):
-        generic_map2.submap(bl_pix, width_pix, height_pix)
-
-    with pytest.warns(SunpyDeprecationWarning):
-        with pytest.raises(ValueError,
-                           match="Either top_right alone or both width and height must be specified."):
-            generic_map2.submap(bl_coord, width_deg, height=height_deg)
-
-    with pytest.warns(SunpyDeprecationWarning):
-        with pytest.raises(ValueError,
-                           match="Either top_right alone or both width and height must be specified"):
-            generic_map2.submap(bl_pix, width_pix, height=height_pix)
-
-    with pytest.warns(SunpyDeprecationWarning):
-        with pytest.raises(TypeError,
-                           match="Invalid input, top_right must be of type SkyCoord or BaseCoordinateFrame."):
-            generic_map2.submap(bl_coord, width_deg)
-
-    with pytest.warns(SunpyDeprecationWarning):
-        with pytest.raises(ValueError,
-                           match="Either top_right alone or both width and height must be specified"):
-            generic_map2.submap(bl_pix, width_pix, height=height_pix)
-
-
-@pytest.mark.skip
 def test_submap_kwarg_only_input_errors(generic_map2, coords):
     """
     This test replaces the one above when the deprecation period is over.
@@ -1047,42 +1028,6 @@ def test_submap_kwarg_only_input_errors(generic_map2, coords):
     for args, kwargs in inputs:
         with pytest.raises(TypeError, match="too many positional arguments"):
             generic_map2.submap(*args, **kwargs)
-
-
-def test_submap_kwarg_only_input_errors(generic_map2, coords):
-    bl_coord, tr_coord, bl_tr_coord = coords
-
-    inputs = (
-        dict(width=width_pix),
-        dict(top_right=tr_pix, width=width_pix),
-        dict(top_right=tr_pix, height=height_pix),
-        dict(),  # Only post deprecation
-    )
-    for kwargs in inputs:
-        with pytest.raises(ValueError, match="top_right alone or both width and height "
-                                             "must be specified"):
-            generic_map2.submap(bl_pix, **kwargs)
-
-    with pytest.raises(TypeError, match="width and height must be a Quantity in units of pixels"):
-        generic_map2.submap(bl_pix, width=width_deg, height=height_deg)
-
-    with pytest.raises(TypeError,
-                       match="top_right must be a Quantity in units of pixels."):
-        generic_map2.submap([10, 10]*u.deg, top_right=[10, 10]*u.deg)
-
-    with pytest.raises(ValueError, match=r"must have shape \(2\, \)"):
-        generic_map2.submap(10*u.pix, top_right=10*u.pix)
-
-    with pytest.raises(ValueError, match=r"must have shape \(2\, \)"):
-        generic_map2.submap([10, 10, 10]*u.pix, top_right=[10, 10, 10]*u.pix)
-
-    with pytest.raises(u.UnitsError):
-        generic_map2.submap([10, 10]*u.deg, width=10*u.km, height=10*u.J)
-
-    with pytest.raises(ValueError,
-                       match="either bottom_left and top_right or bottom_left and height and width should be provided"):
-        generic_map2.submap(SkyCoord([10, 10, 10]*u.deg, [10, 10, 10]*u.deg,
-                                     frame=generic_map2.coordinate_frame))
 
 
 def test_submap_inputs(generic_map2, coords):
@@ -1114,6 +1059,22 @@ def test_contour(simple_map):
     assert contour.obstime == simple_map.date
     assert u.allclose(contour.Tx, [0, -1, 0, 1, 0] * u.arcsec, atol=1e-10 * u.arcsec)
     assert u.allclose(contour.Ty, [0.5, 0, -0.5, 0, 0.5] * u.arcsec, atol=1e-10 * u.arcsec)
+
+
+def test_contour_units(simple_map):
+    # Check that contouring with units works as intended
+    simple_map.meta['bunit'] = 'm'
+    contours = simple_map.contour(1.5 * u.m)
+    assert len(contours) == 1
+
+    contours_cm = simple_map.contour(150 * u.cm)
+    for c1, c2 in zip(contours, contours_cm):
+        np.all(c1 == c2)
+
+    with pytest.raises(u.UnitsError, match='level must be an astropy quantity convertible to m'):
+        simple_map.contour(1.5)
+    with pytest.raises(u.UnitsError, match='level must be an astropy quantity convertible to m'):
+        simple_map.contour(1.5 * u.s)
 
 
 def test_print_map(generic_map):

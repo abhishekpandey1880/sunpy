@@ -36,8 +36,8 @@ from sunpy.image.resample import reshape_image_to_4d_superpixel
 from sunpy.sun import constants
 from sunpy.time import is_time, parse_time
 from sunpy.util import MetaDict, expand_list
-from sunpy.util.decorators import cached_property_based_on, deprecate_positional_args_since, deprecated
-from sunpy.util.exceptions import SunpyMetadataWarning, SunpyUserWarning
+from sunpy.util.decorators import cached_property_based_on, deprecated
+from sunpy.util.exceptions import SunpyDeprecationWarning, SunpyMetadataWarning, SunpyUserWarning
 from sunpy.util.functools import seconddispatch
 from sunpy.visualization import axis_labels_from_ctype, peek_show, wcsaxes_compat
 
@@ -79,21 +79,21 @@ class GenericMap(NDData):
     >>> import sunpy.data.sample  # doctest: +REMOTE_DATA
     >>> aia = sunpy.map.Map(sunpy.data.sample.AIA_171_IMAGE)  # doctest: +REMOTE_DATA
     >>> aia   # doctest: +REMOTE_DATA
-    <sunpy.map.sources.sdo.AIAMap object at 0x...>
+    <sunpy.map.sources.sdo.AIAMap object at ...>
     SunPy Map
     ---------
-    Observatory:		 SDO
-    Instrument:		 AIA 3
-    Detector:		 AIA
-    Measurement:		 171.0 Angstrom
-    Wavelength:		 171.0 Angstrom
-    Observation Date:	 2011-06-07 06:33:02
-    Exposure Time:		 0.234256 s
-    Dimension:		 [1024. 1024.] pix
-    Coordinate System:	 helioprojective
-    Scale:			 [2.402792 2.402792] arcsec / pix
-    Reference Pixel:	 [512.5 512.5] pix
-    Reference Coord:	 [3.22309951 1.38578135] arcsec
+    Observatory:                 SDO
+    Instrument:          AIA 3
+    Detector:            AIA
+    Measurement:                 171.0 Angstrom
+    Wavelength:          171.0 Angstrom
+    Observation Date:    2011-06-07 06:33:02
+    Exposure Time:               0.234256 s
+    Dimension:           [1024. 1024.] pix
+    Coordinate System:   helioprojective
+    Scale:                       [2.402792 2.402792] arcsec / pix
+    Reference Pixel:     [511.5 511.5] pix
+    Reference Coord:     [3.22309951 1.38578135] arcsec
     array([[ -95.92475  ,    7.076416 ,   -1.9656711, ..., -127.96519  ,
             -127.96519  , -127.96519  ],
            [ -96.97533  ,   -5.1167884,    0.       , ...,  -98.924576 ,
@@ -464,7 +464,7 @@ class GenericMap(NDData):
         w2.wcs.pc = self.rotation_matrix
         w2.wcs.cunit = self.spatial_units
         w2.wcs.dateobs = self.date.isot
-        w2.rsun = self.rsun_meters
+        w2.wcs.aux.rsun_ref = self.rsun_meters.to_value(u.m)
 
         # Astropy WCS does not understand the SOHO default of "solar-x" and
         # "solar-y" ctypes.  This overrides the default assignment and
@@ -476,12 +476,23 @@ class GenericMap(NDData):
         if w2.wcs.ctype[1].lower() in ("solar-y", "solar_y"):
             w2.wcs.ctype[1] = 'HPLT-TAN'
 
-        # GenericMap.coordinate_frame is implemented using this method, so we
-        # need to do this only based on .meta.
-        ctypes = {c[:4] for c in w2.wcs.ctype}
-        # Check that the ctypes contains one of these three pairs of axes.
-        if ({'HPLN', 'HPLT'} <= ctypes or {'SOLX', 'SOLY'} <= ctypes or {'CRLN', 'CRLT'} <= ctypes):
-            w2.heliographic_observer = self.observer_coordinate
+        # Set observer coordinate information
+        #
+        # Clear all the aux information that was set earlier. This is to avoid
+        # issues with maps that store multiple observer coordinate keywords.
+        # Note that we have to create a new WCS as it's not possible to modify
+        # wcs.wcs.aux in place.
+        header = w2.to_header()
+        for kw in ['crln_obs', 'dsun_obs', 'hgln_obs', 'hglt_obs']:
+            header.pop(kw, None)
+        w2 = astropy.wcs.WCS(header)
+
+        # Get observer coord, and transform if needed
+        obs_coord = self.observer_coordinate
+        if not isinstance(obs_coord.frame, (HeliographicStonyhurst, HeliographicCarrington)):
+            obs_coord = obs_coord.transform_to(HeliographicStonyhurst(obstime=self.date))
+
+        sunpy.coordinates.wcs_utils._set_wcs_aux_obs_coord(w2, obs_coord)
 
         # Validate the WCS here.
         w2.wcs.set()
@@ -802,9 +813,24 @@ class GenericMap(NDData):
 
     @property
     def coordinate_system(self):
-        """Coordinate system used for x and y axes (ctype1/2)."""
-        return SpatialPair(self.meta.get('ctype1', 'HPLN-   '),
-                           self.meta.get('ctype2', 'HPLT-   '))
+        """
+        Coordinate system used for x and y axes (ctype1/2).
+
+        If not present, defaults to (HPLN-TAN, HPLT-TAN), and emits a warning.
+        """
+        ctype1 = self.meta.get('ctype1', None)
+        if ctype1 is None:
+            warnings.warn("Missing CTYPE1 from metadata, assuming CTYPE1 is HPLN-TAN",
+                          SunpyUserWarning)
+            ctype1 = 'HPLN-TAN'
+
+        ctype2 = self.meta.get('ctype2', None)
+        if ctype2 is None:
+            warnings.warn("Missing CTYPE2 from metadata, assuming CTYPE2 is HPLT-TAN",
+                          SunpyUserWarning)
+            ctype2 = 'HPLT-TAN'
+
+        return SpatialPair(ctype1, ctype2)
 
     @property
     def _supported_observer_coordinates(self):
@@ -846,22 +872,10 @@ class GenericMap(NDData):
             if all(meta_list):
                 sc = SkyCoord(obstime=self.date, **kwargs)
 
-                # We need to specially handle an observer location provided in Carrington
-                # coordinates.  To create the observer coordinate, we need to specify the
-                # frame, but defining a Carrington frame normally requires specifying the
-                # frame's observer.  This loop is the problem.  Instead, since the
-                # Carrington frame needs only the Sun-observer distance component from the
-                # frame's observer, we create the same frame using a fake observer that has
-                # the same Sun-observer distance.
+                # If the observer location is supplied in Carrington coordinates,
+                # the coordinate's `observer` attribute should be set to "self"
                 if isinstance(sc.frame, HeliographicCarrington):
-                    fake_observer = HeliographicStonyhurst(0*u.deg, 0*u.deg, sc.radius,
-                                                           obstime=sc.obstime)
-                    fake_frame = sc.frame.replicate(observer=fake_observer)
-                    hgs = fake_frame.transform_to(HeliographicStonyhurst(obstime=sc.obstime))
-
-                    # HeliographicStonyhurst doesn't need an observer, but adding the observer
-                    # facilitates a conversion back to HeliographicCarrington
-                    return SkyCoord(hgs, observer=hgs)
+                    sc.frame._observer = "self"
 
                 return sc.heliographic_stonyhurst
             elif any(meta_list) and not set(keys).isdisjoint(self.meta.keys()):
@@ -1069,10 +1083,22 @@ class GenericMap(NDData):
                           SunpyUserWarning)
 
 # #### Data conversion routines #### #
-    def world_to_pixel(self, coordinate, origin=0):
+
+    @staticmethod
+    def _check_origin(origin):
         """
-        Convert a world (data) coordinate to a pixel coordinate by using
-        `~astropy.wcs.WCS.wcs_world2pix`.
+        Check origin is valid, and raise a deprecation warning if it's not None.
+        """
+        if origin is not None:
+            warnings.warn('The origin argument is deprecated. If using origin=1, '
+                          'manually subtract 1 from your pixels do not pass a value for origin.',
+                          SunpyDeprecationWarning)
+        if origin not in [None, 0, 1]:
+            raise ValueError('origin must be 0 or 1.')
+
+    def world_to_pixel(self, coordinate, origin=None):
+        """
+        Convert a world (data) coordinate to a pixel coordinate.
 
         Parameters
         ----------
@@ -1080,10 +1106,11 @@ class GenericMap(NDData):
             The coordinate object to convert to pixel coordinates.
 
         origin : int
+            Deprecated.
+
             Origin of the top-left corner. i.e. count from 0 or 1.
             Normally, origin should be 0 when passing numpy indices, or 1 if
             passing values from FITS header or map attributes.
-            See `~astropy.wcs.WCS.wcs_world2pix` for more information.
 
         Returns
         -------
@@ -1093,26 +1120,21 @@ class GenericMap(NDData):
         y : `~astropy.units.Quantity`
             Pixel coordinate on the CTYPE2 axis.
         """
-        if not isinstance(coordinate, (SkyCoord,
-                                       astropy.coordinates.BaseCoordinateFrame)):
-            raise ValueError(
-                "world_to_pixel takes a Astropy coordinate frame or SkyCoord instance.")
-
-        native_frame = coordinate.transform_to(self.coordinate_frame)
-        lon, lat = u.Quantity(self._get_lon_lat(native_frame)).to(u.deg)
-        x, y = self.wcs.wcs_world2pix(lon, lat, origin)
+        self._check_origin(origin)
+        x, y = self.wcs.world_to_pixel(coordinate)
+        if origin == 1:
+            x += 1
+            y += 1
 
         return PixelPair(x * u.pixel, y * u.pixel)
 
     @u.quantity_input
-    def pixel_to_world(self, x: u.pixel, y: u.pixel, origin=0):
+    def pixel_to_world(self, x: u.pixel, y: u.pixel, origin=None):
         """
-        Convert a pixel coordinate to a data (world) coordinate by using
-        `~astropy.wcs.WCS.wcs_pix2world`.
+        Convert a pixel coordinate to a data (world) coordinate.
 
         Parameters
         ----------
-
         x : `~astropy.units.Quantity`
             Pixel coordinate of the CTYPE1 axis. (Normally solar-x).
 
@@ -1120,31 +1142,23 @@ class GenericMap(NDData):
             Pixel coordinate of the CTYPE2 axis. (Normally solar-y).
 
         origin : int
+            Deprecated.
+
             Origin of the top-left corner. i.e. count from 0 or 1.
             Normally, origin should be 0 when passing numpy indices, or 1 if
             passing values from FITS header or map attributes.
-            See `~astropy.wcs.WCS.wcs_pix2world` for more information.
 
         Returns
         -------
-
         coord : `astropy.coordinates.SkyCoord`
             A coordinate object representing the output coordinate.
-
         """
+        self._check_origin(origin)
+        if origin == 1:
+            x = x - 1 * u.pixel
+            y = y - 1 * u.pixel
 
-        # Hold the WCS instance here so we can inspect the output units after
-        # the pix2world call
-        temp_wcs = self.wcs
-
-        x, y = temp_wcs.wcs_pix2world(x, y, origin)
-
-        out_units = list(map(u.Unit, temp_wcs.wcs.cunit))
-
-        x = u.Quantity(x, out_units[0])
-        y = u.Quantity(y, out_units[1])
-
-        return SkyCoord(x, y, frame=self.coordinate_frame)
+        return self.wcs.pixel_to_world(x, y)
 
 # #### I/O routines #### #
 
@@ -1357,8 +1371,7 @@ class GenericMap(NDData):
         temp_map = self._new_instance(new_data, new_meta, self.plot_settings)
 
         # Convert the axis of rotation from data coordinates to pixel coordinates
-        pixel_rotation_center = u.Quantity(temp_map.world_to_pixel(self.reference_coordinate,
-                                                                   origin=0)).value
+        pixel_rotation_center = u.Quantity(temp_map.world_to_pixel(self.reference_coordinate)).value
         del temp_map
 
         if recenter:
@@ -1427,7 +1440,6 @@ class GenericMap(NDData):
 
         return new_map
 
-    @deprecate_positional_args_since(since='2.0', keyword_only=('width', 'height'))
     @u.quantity_input
     def submap(self, bottom_left, *, top_right=None, width: (u.deg, u.pix) = None, height: (u.deg, u.pix) = None):
         """
@@ -1446,8 +1458,6 @@ class GenericMap(NDData):
         top_right : `astropy.units.Quantity` or `~astropy.coordinates.SkyCoord`, optional
             The top-right coordinate of the rectangle. If ``top_right`` is
             specified ``width`` and ``height`` must be omitted.
-            Passing this as a positional argument is deprecated, you must pass
-            it as ``top_right=...``.
         width : `astropy.units.Quantity`, optional
             The width of the rectangle. Required if ``top_right`` is omitted.
         height : `astropy.units.Quantity`
@@ -1478,107 +1488,107 @@ class GenericMap(NDData):
         >>> bl = SkyCoord(-300*u.arcsec, -300*u.arcsec, frame=aia.coordinate_frame)  # doctest: +REMOTE_DATA
         >>> tr = SkyCoord(500*u.arcsec, 500*u.arcsec, frame=aia.coordinate_frame)  # doctest: +REMOTE_DATA
         >>> aia.submap(bl, top_right=tr)   # doctest: +REMOTE_DATA
-        <sunpy.map.sources.sdo.AIAMap object at 0x...>
+        <sunpy.map.sources.sdo.AIAMap object at ...>
         SunPy Map
         ---------
-        Observatory:		 SDO
-        Instrument:		 AIA 3
-        Detector:		 AIA
-        Measurement:		 171.0 Angstrom
-        Wavelength:		 171.0 Angstrom
-        Observation Date:	 2011-06-07 06:33:02
-        Exposure Time:		 0.234256 s
-        Dimension:		 [334. 334.] pix
-        Coordinate System:	 helioprojective
-        Scale:			 [2.402792 2.402792] arcsec / pix
-        Reference Pixel:	 [127.5 126.5] pix
-        Reference Coord:	 [3.22309951 1.38578135] arcsec
-        array([[ 450.4546 ,  565.81494,  585.0416 , ..., 1178.3234 , 1005.28284,
+        Observatory:                 SDO
+        Instrument:          AIA 3
+        Detector:            AIA
+        Measurement:                 171.0 Angstrom
+        Wavelength:          171.0 Angstrom
+        Observation Date:    2011-06-07 06:33:02
+        Exposure Time:               0.234256 s
+        Dimension:           [333. 335.] pix
+        Coordinate System:   helioprojective
+        Scale:                       [2.402792 2.402792] arcsec / pix
+        Reference Pixel:     [125.5 125.5] pix
+        Reference Coord:     [3.22309951 1.38578135] arcsec
+        array([[ 565.81494,  585.0416 ,  656.4552 , ..., 1178.3234 , 1005.28284,
                 977.8161 ],
-            [ 474.20004,  516.1865 ,  555.7032 , ..., 1024.9636 , 1010.1449 ,
+            [ 516.1865 ,  555.7032 ,  634.7365 , ..., 1024.9636 , 1010.1449 ,
                 1010.1449 ],
-            [ 548.1609 ,  620.9256 ,  620.9256 , ...,  933.8139 , 1074.4924 ,
+            [ 620.9256 ,  620.9256 ,  654.8825 , ...,  933.8139 , 1074.4924 ,
                 1108.4492 ],
-                ...,
-            [ 203.58617,  195.52335,  225.75891, ...,  612.7742 ,  580.52295,
-                560.3659 ],
-            [ 206.00058,  212.1806 ,  232.78065, ...,  650.96185,  622.12177,
+            ...,
+            [ 212.1806 ,  232.78065,  228.66064, ...,  650.96185,  622.12177,
                 537.6615 ],
-            [ 229.32516,  236.07002,  222.5803 , ...,  517.1058 ,  586.8026 ,
-                591.2992 ]], dtype=float32)
+            [ 236.07002,  222.5803 ,  218.08372, ...,  517.1058 ,  586.8026 ,
+                591.2992 ],
+            [ 187.92569,  225.1387 ,  236.3026 , ...,  619.59656,  649.367  ,
+                686.58   ]], dtype=float32)
 
-        >>> aia.submap([0,0]*u.pixel, [5,5]*u.pixel)   # doctest: +REMOTE_DATA
-        <sunpy.map.sources.sdo.AIAMap object at 0x...>
+        >>> aia.submap([0,0]*u.pixel, top_right=[5,5]*u.pixel)   # doctest: +REMOTE_DATA
+        <sunpy.map.sources.sdo.AIAMap object at ...>
         SunPy Map
         ---------
-        Observatory:		 SDO
-        Instrument:		 AIA 3
-        Detector:		 AIA
-        Measurement:		 171.0 Angstrom
-        Wavelength:		 171.0 Angstrom
-        Observation Date:	 2011-06-07 06:33:02
-        Exposure Time:		 0.234256 s
-        Dimension:		 [5. 5.] pix
-        Coordinate System:	 helioprojective
-        Scale:			 [2.402792 2.402792] arcsec / pix
-        Reference Pixel:	 [512.5 512.5] pix
-        Reference Coord:	 [3.22309951 1.38578135] arcsec
+        Observatory:                 SDO
+        Instrument:          AIA 3
+        Detector:            AIA
+        Measurement:                 171.0 Angstrom
+        Wavelength:          171.0 Angstrom
+        Observation Date:    2011-06-07 06:33:02
+        Exposure Time:               0.234256 s
+        Dimension:           [6. 6.] pix
+        Coordinate System:   helioprojective
+        Scale:                       [2.402792 2.402792] arcsec / pix
+        Reference Pixel:     [511.5 511.5] pix
+        Reference Coord:     [3.22309951 1.38578135] arcsec
         array([[-95.92475   ,   7.076416  ,  -1.9656711 ,  -2.9485066 ,
-                -0.98283553],
+                -0.98283553,  -6.0935802 ],
             [-96.97533   ,  -5.1167884 ,   0.        ,   0.        ,
-                0.9746264 ],
+                0.9746264 ,   3.8985057 ],
             [-93.99607   ,   1.0189276 ,  -4.0757103 ,   2.0378551 ,
-                -2.0378551 ],
+                -2.0378551 ,  -7.896689  ],
             [-96.97533   ,  -8.040668  ,  -2.9238791 ,  -5.1167884 ,
-                -0.9746264 ],
+                -0.9746264 ,  -8.040668  ],
             [-95.92475   ,   6.028058  ,  -4.9797    ,  -1.0483578 ,
-                -3.9313421 ]], dtype=float32)
+                -3.9313421 ,  -1.0483578 ],
+            [-95.103004  ,   0.        ,  -4.993475  ,   0.        ,
+                -4.0855703 ,  -7.03626   ]], dtype=float32)
 
         >>> width = 10 * u.arcsec
         >>> height = 10 * u.arcsec
         >>> aia.submap(bl, width=width, height=height)   # doctest: +REMOTE_DATA
-        <sunpy.map.sources.sdo.AIAMap object at 0x7f91aecc5438>
+        <sunpy.map.sources.sdo.AIAMap object at ...>
         SunPy Map
         ---------
-        Observatory:		 SDO
-        Instrument:		 AIA 3
-        Detector:		 AIA
-        Measurement:		 171.0 Angstrom
-        Wavelength:		 171.0 Angstrom
-        Observation Date:	 2011-06-07 06:33:02
-        Exposure Time:		 0.234256 s
-        Dimension:		 [4. 4.] pix
-        Coordinate System:	 helioprojective
-        Scale:			 [2.402792 2.402792] arcsec / pix
-        Reference Pixel:	 [126.5 126.5] pix
-        Reference Coord:	 [3.22309951 1.38578135] arcsec
-        array([[565.81494, 585.0416 , 656.4552 , 670.18854],
-            [516.1865 , 555.7032 , 634.7365 , 661.90424],
-            [620.9256 , 620.9256 , 654.8825 , 596.6707 ],
-            [667.5083 , 560.52094, 651.22766, 530.28534]], dtype=float32)
+        Observatory:                 SDO
+        Instrument:          AIA 3
+        Detector:            AIA
+        Measurement:                 171.0 Angstrom
+        Wavelength:          171.0 Angstrom
+        Observation Date:    2011-06-07 06:33:02
+        Exposure Time:               0.234256 s
+        Dimension:           [5. 5.] pix
+        Coordinate System:   helioprojective
+        Scale:                       [2.402792 2.402792] arcsec / pix
+        Reference Pixel:     [125.5 125.5] pix
+        Reference Coord:     [3.22309951 1.38578135] arcsec
+        array([[565.81494, 585.0416 , 656.4552 , 670.18854, 678.4286 ],
+            [516.1865 , 555.7032 , 634.7365 , 661.90424, 587.8105 ],
+            [620.9256 , 620.9256 , 654.8825 , 596.6707 , 531.18243],
+            [667.5083 , 560.52094, 651.22766, 530.28534, 495.39816],
+            [570.15643, 694.5542 , 653.0883 , 699.7374 , 583.11456]],
+            dtype=float32)
 
         >>> bottom_left_vector = SkyCoord([0, 10]  * u.arcsec, [0, 10] * u.arcsec, frame='heliographic_stonyhurst')
         >>> aia.submap(bottom_left_vector)   # doctest: +REMOTE_DATA
-        <sunpy.map.sources.sdo.AIAMap object at 0x7f91aece8be0>
+        <sunpy.map.sources.sdo.AIAMap object at ...>
         SunPy Map
         ---------
-        Observatory:		 SDO
-        Instrument:		 AIA 3
-        Detector:		 AIA
-        Measurement:		 171.0 Angstrom
-        Wavelength:		 171.0 Angstrom
-        Observation Date:	 2011-06-07 06:33:02
-        Exposure Time:		 0.234256 s
-        Dimension:		 [4. 5.] pix
-        Coordinate System:	 helioprojective
-        Scale:			 [2.402792 2.402792] arcsec / pix
-        Reference Pixel:	 [1.5 1.5] pix
-        Reference Coord:	 [3.22309951 1.38578135] arcsec
-        array([[213.9748 , 256.76974, 244.54262, 356.62466],
-            [223.74321, 258.0102 , 292.27716, 340.65408],
-            [219.53459, 242.31648, 308.5911 , 331.373  ],
-            [268.24377, 254.83157, 268.24377, 321.89252],
-            [249.99167, 265.14267, 274.61206, 240.5223 ]], dtype=float32)
+        Observatory:                 SDO
+        Instrument:          AIA 3
+        Detector:            AIA
+        Measurement:                 171.0 Angstrom
+        Wavelength:          171.0 Angstrom
+        Observation Date:    2011-06-07 06:33:02
+        Exposure Time:               0.234256 s
+        Dimension:           [1. 1.] pix
+        Coordinate System:   helioprojective
+        Scale:                       [2.402792 2.402792] arcsec / pix
+        Reference Pixel:     [1.5 0.5] pix
+        Reference Coord:     [3.22309951 1.38578135] arcsec
+        array([[209.89908]], dtype=float32)
         """
         # Check that we have been given a valid combination of inputs
         # [False, False, False] is valid if bottom_left contains the two corner coords
@@ -1870,7 +1880,6 @@ class GenericMap(NDData):
 
         return [circ]
 
-    @deprecate_positional_args_since(since='2.0')
     @u.quantity_input
     def draw_rectangle(self, bottom_left, *, width: u.deg = None, height: u.deg = None,
                        axes=None, top_right=None, **kwargs):
@@ -1891,13 +1900,10 @@ class GenericMap(NDData):
             have shape ``(2,)`` to simultaneously define ``top_right``.
         top_right : `~astropy.coordinates.SkyCoord`
             The top-right coordinate of the rectangle.
-            Passing this as a positional argument is deprecated.
         width : `astropy.units.Quantity`, optional
             The width of the rectangle. Required if ``top_right`` is omitted.
-            Passing this as a positional argument is deprecated.
         height : `astropy.units.Quantity`
             The height of the rectangle. Required if ``top_right`` is omitted.
-            Passing this as a positional argument is deprecated.
         axes : `matplotlib.axes.Axes`
             The axes on which to plot the rectangle, defaults to the current
             axes.
@@ -2177,8 +2183,10 @@ class GenericMap(NDData):
 
         Parameters
         ----------
-        level : float
-            Value along which to find contours in the array.
+        level : float, astropy.units.Quantity
+            Value along which to find contours in the array. If the map unit attribute
+            is not `None`, this must be a `~astropy.units.Quantity` with units
+            equivalent to the map data units.
         kwargs :
             Additional keyword arguments are passed to `skimage.measure.find_contours`.
 
@@ -2187,11 +2195,32 @@ class GenericMap(NDData):
         contours: list of (n,2) `~astropy.coordinates.SkyCoord`
             Coordinates of each contour.
 
+        Examples
+        --------
+        >>> import astropy.units as u
+        >>> import sunpy.map
+        >>> import sunpy.data.sample  # doctest: +REMOTE_DATA
+        >>> aia = sunpy.map.Map(sunpy.data.sample.AIA_171_IMAGE)  # doctest: +REMOTE_DATA
+        >>> contours = aia.contour(50000 * u.ct)  # doctest: +REMOTE_DATA
+        >>> print(contours[0])  # doctest: +REMOTE_DATA
+            <SkyCoord (Helioprojective: obstime=2011-06-07T06:33:02.770, rsun=696000000.0 m, observer=<HeliographicStonyhurst Coordinate (obstime=2011-06-07T06:33:02.770): (lon, lat, radius) in (deg, deg, m)
+        (-0.00406308, 0.04787238, 1.51846026e+11)>): (Tx, Ty) in arcsec
+        [(719.59798458, -352.60839064), (717.19243987, -353.75348121),
+        ...
+
         See also
         --------
         `skimage.measure.find_contours`
         """
         from skimage import measure
+
+        if self.unit is not None:
+            try:
+                level = level.to_value(self.unit)
+            # Catch cases where level can't be converted or isn't a Quantity
+            except (AttributeError, u.UnitConversionError) as e:
+                raise u.UnitsError(f'level must be an astropy quantity convertible to {self.unit}') from e
+
         contours = measure.find_contours(self.data, level=level, **kwargs)
         contours = [self.wcs.array_index_to_world(c[:, 0], c[:, 1]) for c in contours]
         return contours

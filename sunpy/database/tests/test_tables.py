@@ -152,8 +152,9 @@ def test_entries_from_fido_search_result(fido_search_result):
         wavemin=0.1, wavemax=30.4)
     # 2 entries from goes
     assert entries[58] == DatabaseEntry(
-        source='NASA', provider='SDAC', physobs='irradiance',
-        fileid='https://umbra.nascom.nasa.gov/goes/fits/2012/go1520120101.fits',
+        source='GOES', provider='NOAA', physobs='irradiance',
+        fileid='https://satdat.ngdc.noaa.gov/sem/goes/data/science/xrs/goes15/'
+               'gxrs-l2-irrad_science/2012/01/sci_gxrs-l2-irrad_g15_d20120101_v0-0-0.nc',
         observation_time_start=datetime(2012, 1, 1, 0, 0),
         observation_time_end=datetime(2012, 1, 1, 23, 59, 59, 999000),
         wavemin=np.nan, wavemax=np.nan,
@@ -211,7 +212,7 @@ def test_entries_from_fido_search_result_JSOC():
 @pytest.mark.remote_data
 def test_from_fido_search_result_block(fido_search_result):
     entry = DatabaseEntry._from_fido_search_result_block(
-        fido_search_result[0, 0][0].get_response(0).blocks[0])
+        fido_search_result[0, 0].blocks[0])
     expected_entry = DatabaseEntry(
         source='PROBA2', provider='ESA', physobs='irradiance',
         fileid='http://proba2.oma.be/lyra/data/bsd/2012/01/01/lyra_20120101-000000_lev2_std.fits',

@@ -16,7 +16,7 @@ from astropy.wcs import WCS
 import sunpy
 import sunpy.data.test
 import sunpy.map
-from sunpy.util.exceptions import SunpyUserWarning
+from sunpy.util.exceptions import NoMapsInFileError, SunpyUserWarning
 
 filepath = pathlib.Path(sunpy.data.test.rootdir)
 a_list_of_many = [os.fspath(f) for f in pathlib.Path(filepath, "EIT").glob("*")]
@@ -156,7 +156,8 @@ class TestMap:
         header = {'cdelt1': 10, 'cdelt2': 10,
                   'telescop': 'sunpy',
                   'cunit1': 'arcsec', 'cunit2': 'arcsec'}
-        pair_map = sunpy.map.Map(data, header)
+        with pytest.warns(SunpyUserWarning, match='Missing CTYPE1 from metadata, assuming CTYPE1 is HPLN-TAN'):
+            pair_map = sunpy.map.Map(data, header)
         assert isinstance(pair_map, sunpy.map.GenericMap)
 
         # Common keys not strings
@@ -166,7 +167,8 @@ class TestMap:
                   'detector': 1,
                   'instrume': 50,
                   'cunit1': 'arcsec', 'cunit2': 'arcsec'}
-        pair_map = sunpy.map.Map(data, header)
+        with pytest.warns(SunpyUserWarning, match='Missing CTYPE1 from metadata, assuming CTYPE1 is HPLN-TAN'):
+            pair_map = sunpy.map.Map(data, header)
         assert isinstance(pair_map, sunpy.map.GenericMap)
 
     def test_errors(self, tmpdir):
@@ -267,3 +269,16 @@ def test_map_list_urls_cache():
 def test_sources(file, mapcls):
     m = sunpy.map.Map(file)
     assert isinstance(m, mapcls)
+
+
+def test_no_2d_hdus(tmpdir):
+    # Create a fake FITS file with a valid header but 1D data
+    tmp_fpath = str(tmpdir / 'data.fits')
+    with fits.open(AIA_171_IMAGE, ignore_blank=True) as hdul:
+        fits.writeto(tmp_fpath, np.arange(100), hdul[0].header)
+
+    with pytest.raises(NoMapsInFileError, match='Found no HDUs with >= 2D data'):
+        sunpy.map.Map(tmp_fpath)
+
+    with pytest.warns(SunpyUserWarning, match='One of the arguments failed to parse'):
+        sunpy.map.Map([tmp_fpath, AIA_171_IMAGE], silence_errors=True)

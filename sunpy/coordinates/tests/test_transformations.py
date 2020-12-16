@@ -1,7 +1,6 @@
 import numpy as np
 import pytest
 
-import astropy
 import astropy.units as u
 from astropy.constants import c as speed_of_light
 from astropy.coordinates import (
@@ -31,6 +30,7 @@ from sunpy.coordinates import (
     Helioprojective,
     sun,
 )
+from sunpy.coordinates.ephemeris import get_body_heliographic_stonyhurst, get_earth
 from sunpy.coordinates.frames import _J2000
 from sunpy.coordinates.transformations import transform_with_sun_center
 from sunpy.sun.constants import radius as _RSUN
@@ -372,6 +372,51 @@ def test_hgc_hgc_different_observers():
     assert_quantity_allclose(sc_hgc_mars.lon - sc_hgc_sun.lon, ltt_mars * sidereal_rotation_rate)
 
 
+def test_hgc_self_observer():
+    # Test specifying observer='self' for HGC
+    obstime = Time('2001-01-01')
+    hgc = HeliographicCarrington(10*u.deg, 20*u.deg, 3*u.AU, observer='self', obstime=obstime)
+
+    # Transform to HGS (i.e., observer='self' in the source frame)
+    hgs = hgc.transform_to(HeliographicStonyhurst(obstime=obstime))
+
+    # Manually calculate the post-transformation longitude
+    lon = sun.L0(obstime,
+                 light_travel_time_correction=False,
+                 nearest_point=False,
+                 aberration_correction=False)
+    lon += (hgc.radius - _RSUN) / speed_of_light * sidereal_rotation_rate
+
+    assert_quantity_allclose(Longitude(hgs.lon + lon), hgc.lon)
+    assert_quantity_allclose(hgs.lat, hgc.lat)
+    assert_quantity_allclose(hgs.radius, hgc.radius)
+
+    # Transform back to HGC (i.e., observer='self' in the destination frame)
+    hgc_loop = hgs.transform_to(hgc.replicate_without_data())
+
+    assert_quantity_allclose(hgc_loop.lon, hgc.lon)
+    assert_quantity_allclose(hgc_loop.lat, hgc.lat)
+    assert_quantity_allclose(hgc_loop.radius, hgc.radius)
+
+
+def test_hgc_loopback_self_observer():
+    # Test the HGC loopback where only one end has observer='self'
+    obstime = Time('2001-01-01')
+    coord = HeliographicCarrington(10*u.deg, 20*u.deg, 3*u.AU, observer='self', obstime=obstime)
+
+    new_observer = HeliographicStonyhurst(40*u.deg, 50*u.deg, 6*u.AU)
+    new_frame = HeliographicCarrington(observer=new_observer, obstime=obstime)
+
+    new_coord = coord.transform_to(new_frame)
+
+    # Manually calculate the longitude shift due to the difference in Sun-observer distance
+    lon = (6*u.AU - 3*u.AU) / speed_of_light * sidereal_rotation_rate
+
+    assert_quantity_allclose(new_coord.lon, coord.lon + lon)
+    assert_quantity_allclose(new_coord.lat, coord.lat)
+    assert_quantity_allclose(new_coord.radius, coord.radius)
+
+
 def test_hcc_hcc():
     # Test same observer and changing obstime
     observer = HeliographicStonyhurst(0*u.deg, 0*u.deg, 1*u.AU, obstime='2001-02-01')
@@ -514,7 +559,6 @@ def test_hpc_hgs_implicit_hcc():
     assert_quantity_allclose(implicit.separation_3d(explicit2), 0*u.AU, atol=1e-10*u.AU)
 
 
-@pytest.mark.skipif(astropy.__version__ < '3.2.0', reason="Not supported by Astropy <3.2")
 def test_velocity_hcrs_hgs():
     # Obtain the position/velocity of Earth in ICRS
     obstime = Time(['2019-01-01', '2019-04-01', '2019-07-01', '2019-10-01'])
@@ -522,18 +566,14 @@ def test_velocity_hcrs_hgs():
     loc = pos.with_differentials(vel.represent_as(CartesianDifferential))
     earth = SkyCoord(loc, frame='icrs', obstime=obstime)
 
-    # The velocity of Earth in HGS should be very close to zero.  The velocity in the HGS Y
-    # direction is slightly further away from zero because there is true latitudinal motion.
+    # The velocity of Earth in HGS Y should be very close to zero because the XZ plane tracks
+    # the Earth.
     new = earth.heliographic_stonyhurst
-    assert_quantity_allclose(new.velocity.d_x, 0*u.km/u.s, atol=1e-15*u.km/u.s)
-    assert_quantity_allclose(new.velocity.d_y, 0*u.km/u.s, atol=1e-14*u.km/u.s)
-    assert_quantity_allclose(new.velocity.d_x, 0*u.km/u.s, atol=1e-15*u.km/u.s)
+    assert_quantity_allclose(new.velocity.d_y, 0*u.km/u.s, atol=1e-5*u.km/u.s)
 
     # Test the loopback to ICRS
     newer = new.icrs
-    assert_quantity_allclose(newer.velocity.d_x, vel.x)
-    assert_quantity_allclose(newer.velocity.d_y, vel.y)
-    assert_quantity_allclose(newer.velocity.d_z, vel.z)
+    assert_quantity_allclose(newer.velocity.d_xyz, vel.xyz)
 
 
 def test_velocity_hgs_hgc():
@@ -552,6 +592,42 @@ def test_velocity_hgs_hgc():
     assert_quantity_allclose(new_vel.d_lon, -360*u.deg / (27.27253*u.day), rtol=1e-2)
     assert_quantity_allclose(new_vel.d_lat, 0*u.deg/u.s)
     assert_quantity_allclose(new_vel.d_distance, 0*u.km/u.s, atol=1e-7*u.km/u.s)
+
+
+def test_velocity_hgs_hci():
+    # HGS and HCI share the same origin and Z axis, so the induced velocity is entirely angular
+    obstime = Time(['2021-01-01', '2021-04-01', '2021-07-01', '2021-10-01'])
+    venus_hgs = get_body_heliographic_stonyhurst('venus', obstime, include_velocity=True)
+    venus_hci = venus_hgs.transform_to(HeliocentricInertial(obstime=obstime))
+
+    # The induced velocity is the longitude component of Earth's velocity, ~360 deg/yr
+    induced_dlon = get_earth(obstime, include_velocity=True).heliocentricinertial.d_lon
+    assert_quantity_allclose(induced_dlon, 360*u.deg/u.yr, rtol=0.05)
+
+    # The HCI velocity should be the same as the HGS velocity except for the induced velocity
+    assert_quantity_allclose(venus_hci.d_distance, venus_hgs.d_radius, rtol=1e-5)
+    assert_quantity_allclose(venus_hci.d_lon, venus_hgs.d_lon + induced_dlon, rtol=1e-6)
+    assert_quantity_allclose(venus_hci.d_lat, venus_hgs.d_lat)
+
+
+def test_velocity_hcrs_hci():
+    # HCRS and HCI are both inertial frames with the same origin, so there is no induced velocity.
+    # There is an induced angular velocity for HCRS->HGS, which should be canceled out by the
+    # induced angular velocity for HGS->HCI.
+
+    # Define an HCRS coordinate with a purely radial velocity
+    sc_hcrs = SkyCoord(ra=[0, 90, 180, 270]*u.deg, pm_ra_cosdec=[0, 0, 0, 0]*u.deg/u.d,
+                       dec=[10, 20, 30, 40]*u.deg, pm_dec=[0, 0, 0, 0]*u.deg/u.d,
+                       distance=[5, 6, 7, 8]*u.AU, radial_velocity=[1, 2, 3, 4]*u.km/u.s,
+                       frame='hcrs', obstime='2021-01-01')
+
+    # Transform to HCI, and get the velocity vector in spherical coordinates
+    sc_hci = sc_hcrs.heliocentricinertial
+
+    # The HCI velocity should have the same amplitude, and should be purely radial
+    assert_quantity_allclose(sc_hci.d_distance, sc_hcrs.velocity.norm(), rtol=1e-6)
+    assert_quantity_allclose(sc_hci.d_lon, 0*u.arcsec/u.s, atol=1e-9*u.arcsec/u.s)
+    assert_quantity_allclose(sc_hci.d_lat, 0*u.arcsec/u.s, atol=1e-9*u.arcsec/u.s)
 
 
 def test_hme_hee_sunspice():

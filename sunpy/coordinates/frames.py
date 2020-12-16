@@ -4,6 +4,8 @@ Common solar physics coordinate systems.
 This submodule implements various solar physics coordinate frames for use with
 the `astropy.coordinates` module.
 """
+from contextlib import contextmanager
+
 import numpy as np
 
 import astropy.units as u
@@ -22,6 +24,7 @@ from astropy.time import Time
 from sunpy.sun.constants import radius as _RSUN
 from sunpy.time.time import _variables_for_parse_time_docstring
 from sunpy.util.decorators import add_common_docstring
+from sunpy.util.exceptions import SunpyUserWarning
 from .frameattributes import ObserverCoordinateAttribute, TimeFrameAttributeSunPy
 
 _J2000 = Time('J2000.0', scale='tt')
@@ -124,7 +127,7 @@ class SunPyBaseCoordinateFrame(BaseCoordinateFrame):
 
         super().__init__(*args, **kwargs)
 
-        # If obstime is specified, treat the default observer (Earth) as explicitly set
+        # If obstime is specified, treat the default observer (None) as explicitly set
         if self.obstime is not None and self.is_frame_attr_default('observer'):
             self._attr_names_with_defaults.remove('observer')
 
@@ -139,14 +142,6 @@ class SunPyBaseCoordinateFrame(BaseCoordinateFrame):
            isinstance(data, (UnitSphericalRepresentation, SphericalRepresentation)):
             data.lon.wrap_angle = self._wrap_angle
         return data
-
-    @property
-    def size(self):
-        """
-        Returns the size of the underlying data if it exists, else returns 0.  This overrides the
-        property in `~astropy.coordinates.BaseCoordinateFrame`.
-        """
-        return self.data.size if self.has_data else 0
 
     def __str__(self):
         """
@@ -175,10 +170,11 @@ class BaseHeliographic(SunPyBaseCoordinateFrame):
     }
 
     def __init__(self, *args, **kwargs):
-        kwargs.get('representation_type', None)
-
         super().__init__(*args, **kwargs)
 
+        self._make_3d()
+
+    def _make_3d(self):
         # Make 3D if specified as 2D
         if (self._data is not None and self._data.norm().unit is u.one
                 and u.allclose(self._data.norm(), 1*u.one)):
@@ -267,6 +263,12 @@ class HeliographicCarrington(BaseHeliographic):
         HeliographicCarrington(lon, lat, obstime=obstime, observer=observer)
         HeliographicCarrington(lon, lat, radius, obstime=obstime, observer=observer)
 
+    If you want to define the location in HGC such that the observer for the coordinate frame is
+    the same as that location (e.g., the location of an observatory in its corresponding HGC
+    frame), use ``observer='self'``::
+
+        HeliographicCarrington(lon, lat, radius, obstime=obstime, observer='self')
+
     Parameters
     ----------
     {data}
@@ -289,9 +291,11 @@ class HeliographicCarrington(BaseHeliographic):
         (1., 2., 3.)>
 
     >>> sc = SkyCoord([1,2,3]*u.deg, [4,5,6]*u.deg, [5,6,7]*u.km,
-    ...               obstime="2010/01/01T00:00:45", frame="heliographic_carrington")
+    ...               obstime="2010/01/01T00:00:45",
+    ...               observer="self",
+    ...               frame="heliographic_carrington")
     >>> sc
-    <SkyCoord (HeliographicCarrington: obstime=2010-01-01T00:00:45.000, observer=None): (lon, lat, radius) in (deg, deg, km)
+    <SkyCoord (HeliographicCarrington: obstime=2010-01-01T00:00:45.000, observer=self): (lon, lat, radius) in (deg, deg, km)
         [(1., 4., 5.), (2., 5., 6.), (3., 6., 7.)]>
 
     >>> sc = SkyCoord(CartesianRepresentation(0*u.km, 45*u.km, 2*u.km),
@@ -471,16 +475,105 @@ class Helioprojective(SunPyBaseCoordinateFrame):
 
         rep = self.represent_as(UnitSphericalRepresentation)
         lat, lon = rep.lat, rep.lon
-        alpha = np.arccos(np.cos(lat) * np.cos(lon)).to(lat.unit)
+
+        # Check for the use of floats with lower precision than the native Python float
+        if not set([lon.dtype.type, lat.dtype.type]).issubset([float, np.float64, np.longdouble]):
+            raise SunpyUserWarning("The Helioprojective component values appear to be lower "
+                                   "precision than the native Python float: "
+                                   f"Tx is {lon.dtype.name}, and Ty is {lat.dtype.name}. "
+                                   "To minimize precision loss, you may want to cast the values to "
+                                   "`float` or `numpy.float64` via the NumPy method `.astype()`.")
+
+        # Calculate the distance to the surface of the Sun using the law of cosines
+        cos_alpha = np.cos(lat) * np.cos(lon)
         c = self.observer.radius**2 - self.rsun**2
-        b = -2 * self.observer.radius * np.cos(alpha)
-        # Ingore sqrt of NaNs
+        b = -2 * self.observer.radius * cos_alpha
+        # Ignore sqrt of NaNs
         with np.errstate(invalid='ignore'):
-            d = ((-1*b) - np.sqrt(b**2 - 4*c)) / 2
+            d = ((-1*b) - np.sqrt(b**2 - 4*c)) / 2  # use the "near" solution
+
+        if self._spherical_screen:
+            sphere_center = self._spherical_screen['center'].transform_to(self).cartesian
+            c = sphere_center.norm()**2 - self._spherical_screen['radius']**2
+            b = -2 * sphere_center.dot(rep)
+            # Ignore sqrt of NaNs
+            with np.errstate(invalid='ignore'):
+                dd = ((-1*b) + np.sqrt(b**2 - 4*c)) / 2  # use the "far" solution
+
+            d = np.fmin(d, dd) if self._spherical_screen['only_off_disk'] else dd
 
         return self.realize_frame(SphericalRepresentation(lon=lon,
                                                           lat=lat,
                                                           distance=d))
+
+    _spherical_screen = None
+
+    @classmethod
+    @contextmanager
+    def assume_spherical_screen(cls, center, only_off_disk=False):
+        """
+        Context manager to interpret 2D coordinates as being on the inside of a spherical screen.
+
+        The radius of the screen is the distance between the specified `center` and Sun center.
+        This `center` does not have to be the same as the observer location for the coordinate
+        frame.  If they are the same, then this context manager is equivalent to assuming that the
+        helioprojective "zeta" component is zero.
+
+        This replaces the default assumption where 2D coordinates are mapped onto the surface of the
+        Sun.
+
+        Parameters
+        ----------
+        center : `~astropy.coordinates.SkyCoord`
+            The center of the spherical screen
+        only_off_disk : `bool`, optional
+            If `True`, apply this assumption only to off-disk coordinates, with on-disk coordinates
+            still mapped onto the surface of the Sun.  Defaults to `False`.
+
+        Examples
+        --------
+
+        .. minigallery:: sunpy.coordinates.Helioprojective.assume_spherical_screen
+
+        >>> import astropy.units as u
+        >>> from sunpy.coordinates import Helioprojective
+        >>> h = Helioprojective(range(7)*u.arcsec*319, [0]*7*u.arcsec,
+        ...                     observer='earth', obstime='2020-04-08')
+        >>> print(h.make_3d())
+        <Helioprojective Coordinate (obstime=2020-04-08T00:00:00.000, rsun=695700.0 km, observer=<HeliographicStonyhurst Coordinate for 'earth'>): (Tx, Ty, distance) in (arcsec, arcsec, AU)
+            [(   0., 0., 0.99660825), ( 319., 0., 0.99687244),
+             ( 638., 0., 0.99778472), ( 957., 0., 1.00103285),
+             (1276., 0.,        nan), (1595., 0.,        nan),
+             (1914., 0.,        nan)]>
+
+        >>> with Helioprojective.assume_spherical_screen(h.observer):
+        ...     print(h.make_3d())
+        <Helioprojective Coordinate (obstime=2020-04-08T00:00:00.000, rsun=695700.0 km, observer=<HeliographicStonyhurst Coordinate for 'earth'>): (Tx, Ty, distance) in (arcsec, arcsec, AU)
+            [(   0., 0., 1.00125872), ( 319., 0., 1.00125872),
+             ( 638., 0., 1.00125872), ( 957., 0., 1.00125872),
+             (1276., 0., 1.00125872), (1595., 0., 1.00125872),
+             (1914., 0., 1.00125872)]>
+
+        >>> with Helioprojective.assume_spherical_screen(h.observer, only_off_disk=True):
+        ...     print(h.make_3d())
+        <Helioprojective Coordinate (obstime=2020-04-08T00:00:00.000, rsun=695700.0 km, observer=<HeliographicStonyhurst Coordinate for 'earth'>): (Tx, Ty, distance) in (arcsec, arcsec, AU)
+            [(   0., 0., 0.99660825), ( 319., 0., 0.99687244),
+             ( 638., 0., 0.99778472), ( 957., 0., 1.00103285),
+             (1276., 0., 1.00125872), (1595., 0., 1.00125872),
+             (1914., 0., 1.00125872)]>
+        """
+        try:
+            old_spherical_screen = cls._spherical_screen  # nominally None
+
+            center_hgs = center.transform_to(HeliographicStonyhurst(obstime=center.obstime))
+            cls._spherical_screen = {
+                'center': center,
+                'radius': center_hgs.radius,
+                'only_off_disk': only_off_disk
+            }
+            yield
+        finally:
+            cls._spherical_screen = old_spherical_screen
 
 
 @add_common_docstring(**_frame_parameters())

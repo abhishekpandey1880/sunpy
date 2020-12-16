@@ -9,10 +9,13 @@ from parfive import Results
 import astropy.table
 import astropy.time
 import astropy.units as u
+from astropy.coordinates import SkyCoord
 
+import sunpy.data.test
+import sunpy.map
 import sunpy.net.attrs as a
 from sunpy.net.jsoc import JSOCClient, JSOCResponse
-from sunpy.util.exceptions import SunpyUserWarning
+from sunpy.util.exceptions import SunpyDeprecationWarning, SunpyUserWarning
 
 
 @pytest.fixture
@@ -98,8 +101,8 @@ def test_show(client):
 def test_post_wavelength(client):
     responses = client.search(
         a.Time('2020/07/30T13:30:00', '2020/07/30T14:00:00'),
-        a.jsoc.Series('aia.lev1_euv_12s'), a.jsoc.Wavelength(193 * u.AA) |
-        a.jsoc.Wavelength(335 * u.AA), a.jsoc.Notify('jsoc@cadair.com'))
+        a.jsoc.Series('aia.lev1_euv_12s'), a.Wavelength(193 * u.AA) |
+        a.Wavelength(335 * u.AA), a.jsoc.Notify('jsoc@cadair.com'))
     aa = client.request_data(responses)
     [r.wait() for r in aa]
     tmpresp = aa[0]._d
@@ -127,7 +130,7 @@ def test_post_wave_series(client):
         client.search(
             a.Time('2020/1/1T00:00:00', '2020/1/1T00:00:45'),
             a.jsoc.Series('hmi.M_45s') | a.jsoc.Series('aia.lev1_euv_12s'),
-            a.jsoc.Wavelength(193 * u.AA) | a.jsoc.Wavelength(335 * u.AA))
+            a.Wavelength(193 * u.AA) | a.Wavelength(335 * u.AA))
 
 
 @pytest.mark.remote_data
@@ -293,12 +296,13 @@ def test_make_recordset(client):
 
 @pytest.mark.remote_data
 def test_search_metadata(client):
-    metadata = client.search_metadata(a.Time('2020-01-01T00:00:00', '2020-01-01T00:02:00'),
-                                      a.jsoc.Series('aia.lev1_euv_12s'), a.jsoc.Wavelength(304*u.AA))
-    assert isinstance(metadata, pd.DataFrame)
-    assert metadata.shape == (11, 176)
-    for i in metadata.index.values:
-        assert (i.startswith('aia.lev1_euv_12s') and i.endswith('[304]'))
+    with pytest.raises(SunpyDeprecationWarning):
+        metadata = client.search_metadata(a.Time('2020-01-01T00:00:00', '2020-01-01T00:02:00'),
+                                          a.jsoc.Series('aia.lev1_euv_12s'), a.Wavelength(304*u.AA))
+        assert isinstance(metadata, pd.DataFrame)
+        assert metadata.shape == (11, 176)
+        for i in metadata.index.values:
+            assert (i.startswith('aia.lev1_euv_12s') and i.endswith('[304]'))
 
 
 @pytest.mark.remote_data
@@ -433,3 +437,30 @@ def test_jsoc_attrs(client):
     assert a.jsoc.Segment in attrs.keys()
     assert len(attrs[a.jsoc.Series]) != 0
     assert len(attrs[a.jsoc.Segment]) != 0
+
+
+@pytest.mark.flaky(reruns_delay=30)
+@pytest.mark.remote_data
+def test_jsoc_cutout_attrs(client):
+    m_ref = sunpy.map.Map(sunpy.data.test.get_test_filepath('aia_171_level1.fits'))
+    cutout = a.jsoc.Cutout(
+        SkyCoord(-500*u.arcsec, -275*u.arcsec, frame=m_ref.coordinate_frame),
+        top_right=SkyCoord(150*u.arcsec, 375*u.arcsec, frame=m_ref.coordinate_frame),
+        tracking=True
+    )
+    q = client.search(
+        a.Time(m_ref.date, m_ref.date + 1 * u.min),
+        a.Wavelength(171*u.angstrom),
+        a.jsoc.Series.aia_lev1_euv_12s,
+        a.jsoc.Notify('jsoc@cadair.com'),  # Put your email here
+        a.jsoc.Segment.image,
+        cutout,
+    )
+    req = client.request_data(q, method='url', protocol='fits')
+    req.wait()
+    assert req.status == 0
+    files = client.get_request(req, max_conn=2)
+    assert len(files) == 6
+    m = sunpy.map.Map(files, sequence=True)
+    assert m.all_maps_same_shape()
+    assert m.as_array().shape == (1085, 1085, 6)
