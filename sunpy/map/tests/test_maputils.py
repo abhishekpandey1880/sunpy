@@ -1,12 +1,9 @@
-import os
-
 import numpy as np
 import pytest
 
 import astropy.units as u
 from astropy.coordinates import BaseCoordinateFrame, SkyCoord
 
-import sunpy.data.test
 import sunpy.map
 from sunpy.coordinates import HeliographicStonyhurst
 from sunpy.coordinates.frames import HeliographicCarrington
@@ -14,6 +11,7 @@ from sunpy.coordinates.utils import GreatArc
 from sunpy.map.maputils import (
     _verify_coordinate_helioprojective,
     all_coordinates_from_map,
+    all_corner_coords_from_map,
     all_pixel_indices_from_map,
     contains_full_disk,
     contains_limb,
@@ -26,13 +24,6 @@ from sunpy.map.maputils import (
     sample_at_coords,
     solar_angular_radius,
 )
-
-testpath = sunpy.data.test.rootdir
-
-
-@pytest.fixture
-def aia171_test_map():
-    return sunpy.map.Map(os.path.join(testpath, 'aia_171_level1.fits'))
 
 
 @pytest.fixture
@@ -97,6 +88,15 @@ def test_all_coordinates_from_map(sub_smap):
     coordinates = all_coordinates_from_map(sub_smap)
     shape = sub_smap.data.shape
     assert coordinates.shape == (shape[0], shape[1])
+    assert isinstance(coordinates, SkyCoord)
+    assert isinstance(coordinates.frame, BaseCoordinateFrame)
+    assert coordinates.frame.name == sub_smap.coordinate_frame.name
+
+
+def test_all_corner_coordinates_from_map(sub_smap):
+    coordinates = all_corner_coords_from_map(sub_smap)
+    shape = sub_smap.data.shape
+    assert coordinates.shape == (shape[0] + 1, shape[1] + 1)
     assert isinstance(coordinates, SkyCoord)
     assert isinstance(coordinates.frame, BaseCoordinateFrame)
     assert coordinates.frame.name == sub_smap.coordinate_frame.name
